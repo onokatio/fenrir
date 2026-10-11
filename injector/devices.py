@@ -2,9 +2,15 @@ from cert_bypass import CertBypass
 from device import Device
 from stage import PayloadStage, PatchStage
 from patch_utils import MatchMode
+from init_boot_write import InitBootWriteStage
 
 
 DEVICES = [
+    Device(
+        'PacmanInitBootWrite',
+        'Nothing Phone 2a, existing Fenrir LK 202511201009',
+        {'init_boot_write': InitBootWriteStage()},
+    ),
     Device(
         'Pacman',
         'Nothing Phone 2a',

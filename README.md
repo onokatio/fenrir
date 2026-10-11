@@ -1,3 +1,9 @@
+# Fenrir fork: flag-controlled init_boot writes
+
+This fork adds an experimental, one-normal-boot exception for the active `init_boot` on one analysed Pacman LK build. Protection remains enabled by default. See [the feature and build instructions](docs/init_boot_write.md) or [日本語](docs/init_boot_write_ja.md). Hardware validation is pending.
+
+The original author's archived README follows.
+
 # This repository is deprecated and archived.
 
 ## Why?
