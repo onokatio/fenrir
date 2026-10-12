@@ -1,6 +1,6 @@
 # Fenrir fork: flag-controlled init_boot writes
 
-This fork adds an experimental, one-normal-boot exception for the active `init_boot` on one analysed Pacman LK build. Revision 3 limits the locked / green spoof to normal boot and reports the actual state in recovery and bootloader. Revision 2's write exception and protection restoration were checked on hardware; revision 3's reporting changes have not been hardware-tested. See [the feature and build instructions](docs/init_boot_write.md) or [日本語](docs/init_boot_write_ja.md).
+This fork adds an experimental, one-normal-boot exception for the active `init_boot` on one analysed Pacman LK build. Revision 3 limits the locked / green spoof to normal boot and reports the actual state in recovery and bootloader. Revision 2's write exception and protection restoration were checked on hardware. The user checked revision 3's normal boot and state reporting in bootloader and fastbootd; recovery properties remain unchecked. See [the feature and build instructions](docs/init_boot_write.md) or [日本語](docs/init_boot_write_ja.md).
 
 The original author's archived README follows.
 

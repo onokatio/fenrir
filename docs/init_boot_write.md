@@ -2,7 +2,9 @@
 
 This fork adds an experimental flag-controlled exception to UFS write protection while retaining Fenrir's locked / green spoof during normal Android boot. Default normal boots use stock LK's protection ranges. Only an explicit flag excludes the selected slot's `init_boot` on the next normal boot.
 
-Revision 2 booted on hardware. Read-only checks confirmed that only `init_boot_b` was excluded from UFS protection and that the following normal boot restored its protection. The user also reported successful KernelSU-Next direct installation. Revision 3 adds the boot-mode-dependent reporting below and has not been tested on hardware. Building and testing do not operate a phone.
+Revision 2 booted on hardware. Read-only checks confirmed that only `init_boot_b` was excluded from UFS protection and that the following normal boot restored its protection. The user also reported successful KernelSU-Next direct installation.
+
+For revision 3, the user confirmed green during normal Android boot and `unlocked: yes` in bootloader and fastbootd. Recovery property checks were skipped because ADB shell was unavailable. Orange in fastbootd was checked indirectly through `unlocked: yes`. Building and testing do not operate a phone.
 
 The first revision left the flag at `once-b` after a normal boot, and KernelSU-Next direct installation failed with `sync boot failed`. The write-protection argument is Verified Boot color; it was confused with Fenrir's displayed lock value `4`. Since revision 2, the payload follows stock LK's bypass condition: orange (`2`) bypasses protection; other colors can consume the request during a normal boot. The previously cited log value `lock_state=1` belongs to a different state namespace and was not an observation of this argument. Revision 3 uses the marker `FENRIR_INIT_BOOT_WRITE_V3`.
 
