@@ -2,7 +2,9 @@
 
 This fork adds an experimental flag-controlled exception to UFS write protection while retaining Fenrir's locked / green spoof. Default boots use stock LK's protection ranges. Only an explicit flag excludes the selected slot's `init_boot` on the next normal boot.
 
-Booting on hardware, the resulting UFS protection, and KernelSU-Next writes have not been tested. Generated LK images are experimental. Building and testing do not operate a phone.
+Booting the revised image on hardware, the resulting UFS protection, and KernelSU-Next writes have not been tested. Generated LK images are experimental. Building and testing do not operate a phone.
+
+The first revision left the flag at `once-b` after a normal boot, and KernelSU-Next direct installation failed with `sync boot failed`. It confused the state passed to stock LK's write-protection function with Fenrir's displayed lock value `4`. The observed state in the device's boot log was `1`. Revision 2 follows stock LK's bypass condition: state `2` bypasses protection; other states can consume the request during a normal boot. Its payload marker is `FENRIR_INIT_BOOT_WRITE_V2`.
 
 ## Supported LK
 

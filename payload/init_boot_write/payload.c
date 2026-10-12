@@ -32,7 +32,7 @@ __asm__(".section .entry,\"ax\"\n"
         "ioctl_entry: b fenrir_ioctl\n"
         ".text\n");
 __attribute__((used, section(".fenrir_tag")))
-static const char payload_tag[] = "FENRIR_INIT_BOOT_WRITE_V1";
+static const char payload_tag[] = "FENRIR_INIT_BOOT_WRITE_V2";
 static const char key[] = "fenrir_init_boot_write";
 static const char variable[] = "fenrir-init-boot-write";
 
@@ -92,9 +92,10 @@ void fenrir_fastboot(void) {
     notify_fastboot();
 }
 
-int fenrir_protect(uint8_t mode, int lock_state) {
+int fenrir_protect(uint8_t mode, int boot_state) {
     window.enabled = 0;
-    if (mode == 0 && lock_state == 4 && get_bootdev() == 2) {
+    /* Match stock's bypass state; this is not the spoofed LKS_LOCK value (4). */
+    if (mode == 0 && boot_state != 2 && get_bootdev() == 2) {
         const char *value = pending();
         if (!equal(value, "off")) {
             uint64_t first, last;
@@ -110,7 +111,7 @@ int fenrir_protect(uint8_t mode, int lock_state) {
             }
         }
     }
-    int result = set_protect(mode, lock_state);
+    int result = set_protect(mode, boot_state);
     window.enabled = 0;
     return result;
 }

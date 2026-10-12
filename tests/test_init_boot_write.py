@@ -121,8 +121,8 @@ class LK:
         result = self.uc.reg_read(UC_ARM64_REG_X0) & 0xFFFFFFFF
         return result - (1 << 32) if result & 0x80000000 else result
 
-    def activate(self):
-        assert self.run(ENTRY + 4, 0, 4) == 77
+    def activate(self, boot_state=4):
+        assert self.run(ENTRY + 4, 0, boot_state) == 77
         assert struct.unpack_from('<I', self.captured, 16)[0] == 1
         assert struct.unpack('<I', self.uc.mem_read(STATE + 16, 4))[0] == 0
         self.uc.mem_write(STATE, self.captured)
@@ -185,6 +185,21 @@ class PayloadTests(unittest.TestCase):
             self.assertEqual(len(lk.ioctls), 1)
             lk.run(ENTRY + 4, 0, 4)
             self.assertEqual(struct.unpack_from('<I', lk.captured, 16)[0], 0)
+
+    def test_stock_caller_security_states_consume_and_split(self):
+        # Stock LK passes its cached state (1/3), not the spoofed LKS_LOCK (4).
+        for boot_state in (1, 3):
+            with self.subTest(boot_state=boot_state):
+                lk = LK('once-b')
+                # Device GPT and LK log: init_boot_b inside md1img_b -> tee_b.
+                lk.first, lk.last = 453376, 455423
+                lk.uc.mem_write(BASE + 0x1B4480, struct.pack('<I', 1))
+                lk.activate(boot_state)
+                self.assertEqual(lk.protect_calls, [[0, boot_state]])
+                self.assertEqual(lk.flag, 'off')
+                lk.ioctl(first=321536, count=145408)
+                self.assertEqual(lk.hardware, [[0, 3, 321536, 131840, 2], [0, 3, 455424, 11520, 2]])
+                self.assertEqual(lk.ioctls, [])
 
     def test_zero_length_pieces(self):
         for first, count, pieces in ((1400, 200, []), (1400, 600, [[0, 3, 1600, 400, 2]]),

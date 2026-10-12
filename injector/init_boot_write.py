@@ -29,7 +29,7 @@ class InitBootWriteStage(PayloadStage):
         except FileNotFoundError as error:
             # This stage must not inherit the injector's optional-payload skip behaviour.
             raise RuntimeError("Build the init-boot-write target before injecting") from error
-        tag = b"FENRIR_INIT_BOOT_WRITE_V1\0"
+        tag = b"FENRIR_INIT_BOOT_WRITE_V2\0"
         if not 64 <= len(payload) <= self.CAPACITY or payload.count(tag) != 1 or not payload.rstrip(b'\0').endswith(tag[:-1]):
             raise ValueError("Invalid init_boot_write payload")
         for entry in (0, 4, 8):
