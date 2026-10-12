@@ -1,10 +1,10 @@
 # init_boot の一時的な書き込み許可（実験版）
 
-このフォークには、Fenrirのlocked / green表示を維持しながら、使用中のスロットの `init_boot` をAndroidから書き込めるようにする実験機能を追加しました。通常は元のLKと同じ保護を設定します。明示的にフラグを設定した場合だけ、次の通常起動で `init_boot` を保護対象から外します。
+このフォークには、通常のAndroid起動ではFenrirのlocked / green表示を維持しながら、使用中のスロットの `init_boot` を書き込めるようにする実験機能を追加しました。通常起動では元のLKと同じ保護を設定します。明示的にフラグを設定した場合だけ、次の通常起動で `init_boot` を保護対象から外します。
 
-修正版の実機での起動、UFS保護の設定結果、KernelSU-Nextからの書き込みは未検証です。生成したLKは実験用です。ビルドとテストは端末を操作しません。
+v2では、実機の起動、`init_boot_b` だけがUFS保護対象から外れること、次の通常起動で保護が戻ることを確認しました。KernelSU-Nextの直接インストールも利用者から成功の報告がありました。以下の起動モード別の表示を追加したv3は、実機では未検証です。ビルドとテストは端末を操作しません。
 
-初版では、通常起動後もフラグが `once-b` のまま残り、KernelSU-Nextの直接インストールで `sync boot failed` が発生しました。書き込み保護処理に渡される状態値と、Fenrirが表示用に返すロック値 `4` を混同していたためです。実機の起動ログで確認した状態値は `1` でした。修正版では元のLKと同じく、状態値が `2` の場合は保護処理をバイパスし、それ以外の通常起動で予約を消費する条件に改めました。ペイロードの識別子は `FENRIR_INIT_BOOT_WRITE_V2` です。
+初版では、通常起動後もフラグが `once-b` のまま残り、KernelSU-Nextの直接インストールで `sync boot failed` が発生しました。書き込み保護処理の引数はVerified Bootの色ですが、Fenrirが返すロック値 `4` と混同していたためです。v2からは元のLKと同じく、orangeを示す色の値 `2` の場合は保護処理をバイパスし、それ以外の通常起動で予約を消費します。以前の説明で根拠にしたログの `lock_state=1` は別の値で、この引数の観測値ではありません。v3の識別子は `FENRIR_INIT_BOOT_WRITE_V3` です。
 
 ## 対応するLK
 
@@ -36,6 +36,22 @@ make -C payload/init_boot_write CC=aarch64-linux-gnu-gcc \
 
 ペイロードが未ビルド、容量超過、または入力LKが不一致の場合、注入処理はエラーで終了します。成功時も端末への書き込みは行いません。入力と出力には別のファイルを指定してください。
 
+## 起動モードごとの表示
+
+通常のAndroid起動（LKの `NORMAL_BOOT=0`）だけでlocked / greenを返します。それ以外では元のLKのロック状態取得処理を使い、実際にアンロックされていればorangeを返します。
+
+| 起動先 | LKから伝える状態 |
+| --- | --- |
+| 通常のAndroid | locked / green（Fenrirの偽装を維持） |
+| recovery（`RECOVERY_BOOT=2`） | 実際のロック状態。アンロック済みならunlocked / orange |
+| bootloader fastboot（`FASTBOOT=99`） | 実際のロック状態。`getvar unlocked` はアンロック済みなら `yes` |
+| fastbootd | recoveryに渡されたunlocked / orangeを引き継ぐ |
+| その他の起動モード | 実際のロック状態に基づく表示 |
+
+[AOSPのfastbootd仕様](https://source.android.com/docs/core/architecture/bootloader/fastbootd)では、fastbootdはrecovery経由で起動します。LKの色の保存先も更新するため、recoveryの起動引数がgreenのまま残らないようにしています。LKが渡す起動状態を切り替える機能で、Android起動後のプロパティは変更しません。
+
+実際にロックされている場合は元のLKが指定した色を維持し、ロック状態の取得に失敗した場合はredを返します。通常起動以外の書き込み保護も、元のLKがその状態に対して行う処理に従います。通常のAndroidで使う一回限りの許可フラグは、これらの起動では消費しません。
+
 ## フラグの操作
 
 以下は、このLKを導入した後に使うコマンドの仕様です。通常のFenrir LKやfastbootdには、このコマンドはありません。フラグの設定と取り消しは端末の `para` 内にあるLKの環境変数領域に書き込みます。
@@ -57,7 +73,7 @@ fastboot oem fenrir-init-boot-write cancel
 
 ## 保護範囲と失敗時の処理
 
-LKが設定する保護範囲を、GPTから取得した `init_boot_a` または `init_boot_b` の前後で分割します。反対側のスロット、LK、preloader、seccfgなどの保護範囲は元の処理に従います。ロック状態やVerified Bootの表示を変えるパッチには手を加えていません。
+通常起動時にLKが設定する保護範囲を、GPTから取得した `init_boot_a` または `init_boot_b` の前後で分割します。反対側のスロット、LK、preloader、seccfgなどの保護範囲は元の処理に従います。
 
 フラグの保存・読み直し、スロットの照合、GPTの取得に失敗した場合は元の保護処理を使います。UFSの保護エントリーはLUごとに最大4件なので、後続のseccfg用に1件を確保できない場合も元の範囲を保護します。分割した範囲のUFS設定に失敗した場合は、保護が不完全なままAndroidを起動しないよう、LKのassert処理を呼びます。
 
@@ -70,7 +86,7 @@ python3 -m pip install unicorn==2.1.4
 python3 -m unittest discover -s tests -v
 ```
 
-テストではビルドしたAArch64バイナリをエミュレータで実行し、フラグの設定・取り消し・消費、スロットの照合、範囲分割、保護エントリーの上限、エラー処理を確認します。LKの関数とUFSはモックで置き換えています。実機の動作確認を代替するものではありません。
+テストではビルドしたAArch64バイナリをエミュレータで実行し、フラグの設定・取り消し・消費、スロットの照合、範囲分割、保護エントリーの上限、起動モード別のロック状態と色、エラー処理を確認します。ロック状態取得関数の元の後半も実行しますが、ストレージの読み取りやUFSなどのLK APIはモックです。実機の動作確認を代替するものではありません。
 
 ## 注入位置
 
@@ -82,6 +98,9 @@ python3 -m unittest discover -s tests -v
 | `notify_enter_fastboot` の呼び出し | `0xe18c` |
 | `set_write_protect` の呼び出し | `0xda2c` |
 | 通常のパーティション範囲に対する `bio_ioctl` の呼び出し | `0x73330` |
+| ロック状態の取得関数 / 復元する元の関数の後半 | `0x820ac` / `0x820bc` |
+| Verified Bootの色のget / set | `0x4f2e0` / `0x4f2ec` |
+| 起動モードの取得 | `0xae64` |
 | LK環境変数のget / set / init | `0x31038` / `0x3110c` / `0x30d0c` |
 | GPT取得 / UFS保護設定 | `0x734a8` / `0x36f30` |
 

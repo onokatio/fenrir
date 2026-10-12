@@ -9,6 +9,8 @@
 #define get_suffix API(0x178c4, const char *(*)(void))
 #define get_partition API(0x734a8, int (*)(const char *, const void **))
 #define get_bootdev API(0x72e70, int (*)(void))
+#define get_bootmode API(0xae64, unsigned (*)(void))
+#define stored_boot_state (*(volatile unsigned *)(uintptr_t)0xffff000050fc7120ULL)
 #define set_protect API(0x27d14, int (*)(uint8_t, int))
 #define bio_ioctl API(0x5f6c0, int (*)(void *, unsigned, void *))
 #define ufs_protect API(0x36f30, int (*)(unsigned, unsigned, uint64_t, uint32_t, unsigned))
@@ -26,15 +28,54 @@ struct window { uint64_t first, last; uint32_t enabled; };
 _Static_assert(offsetof(struct range, type) == 12, "LK ioctl ABI");
 
 __asm__(".section .entry,\"ax\"\n"
-        ".global fastboot_entry, protect_entry, ioctl_entry\n"
+        ".global fastboot_entry, protect_entry, ioctl_entry, lock_entry, state_get_entry, state_set_entry\n"
         "fastboot_entry: b fenrir_fastboot\n"
         "protect_entry: b fenrir_protect\n"
         "ioctl_entry: b fenrir_ioctl\n"
+        "lock_entry: b fenrir_lock_state\n"
+        "state_get_entry: b fenrir_get_boot_state\n"
+        "state_set_entry: b fenrir_set_boot_state\n"
+        ".text\n"
+        ".global stock_lock_state\n"
+        "stock_lock_state:\n"
+        /* Restore the overwritten prologue and keep stock validation/error handling. */
+        "cbz x0, 1f\n"
+        "stp x29, x30, [sp, #-0x20]!\n"
+        "str x19, [sp, #0x10]\n"
+        "mov x29, sp\n"
+        "b stock_lock_tail\n"
+        "1: mov w0, #6\n"
+        "movk w0, #0x10, lsl #16\n"
+        "ret\n"
         ".text\n");
+extern int stock_lock_state(unsigned *state);
 __attribute__((used, section(".fenrir_tag")))
-static const char payload_tag[] = "FENRIR_INIT_BOOT_WRITE_V2";
+static const char payload_tag[] = "FENRIR_INIT_BOOT_WRITE_V3";
 static const char key[] = "fenrir_init_boot_write";
 static const char variable[] = "fenrir-init-boot-write";
+
+int fenrir_lock_state(unsigned *state) {
+    if (!state) return 0x100006;
+    if (get_bootmode() != 0) return stock_lock_state(state);
+    *state = 4; /* Fenrir LKS_LOCK; stock LKS_UNLOCK is 3. */
+    return 0;
+}
+
+static unsigned reported_boot_state(unsigned requested) {
+    if (get_bootmode() == 0) return 0;
+    unsigned state;
+    if (stock_lock_state(&state) != 0) return 3;
+    return state == 3 ? 2 : requested;
+}
+
+unsigned fenrir_get_boot_state(void) {
+    stored_boot_state = reported_boot_state(stored_boot_state);
+    return stored_boot_state;
+}
+
+void fenrir_set_boot_state(unsigned state) {
+    stored_boot_state = reported_boot_state(state);
+}
 
 static int equal(const char *a, const char *b) {
     if (!a || !b) return 0;

@@ -13,11 +13,13 @@ from unicorn.arm64_const import UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'injector'))
 from init_boot_write import InitBootWriteStage
-from utils import encode_bl
+from utils import encode_b, encode_bl
 
 BASE = InitBootWriteStage.LK_BASE
 ENTRY = BASE + InitBootWriteStage.PAYLOAD_OFFSET
 STATE = 0xFFFF0000510C1DA0
+BOOT_STATE = BASE + 0xC7120
+LOCK_STATE = BASE + 0x1C3E4C
 BUFFER = 0x2000000
 STOP = BUFFER + 0x10000
 REGS = [UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X2, UC_ARM64_REG_X3, UC_ARM64_REG_X4]
@@ -33,12 +35,22 @@ class LK:
         self.uc.mem_map(BASE, 0x200000)
         self.uc.mem_map(BUFFER, 0x20000)
         self.uc.mem_write(ENTRY, (ROOT / 'payload/build/pacman/init_boot_write/payload.bin').read_bytes())
+        for function, _, entry in InitBootWriteStage.FUNCTION_HOOKS:
+            self.uc.mem_write(BASE + function, encode_b(BASE + function, ENTRY + entry))
+        # The untouched stock getter tail executes, including its error handling.
+        self.uc.mem_write(BASE + 0x820BC, bytes.fromhex(
+            'f30300aa3effff97080a00b01f000071090086520902a072084d4eb9'
+            'e003891a08059f1a680200b9f30b40f9fd7bc2a8c0035fd6'))
         self.flag = self.cache = flag
         self.suffix = suffix
         self.first, self.last = 1400, 1599
         self.partition_found = True
         self.storage_ok = self.reload_ok = True
         self.bootdev = 2
+        self.bootmode = 0
+        self.real_lock_state = 3
+        self.lock_error = 0
+        self.lock_reads = 0
         self.bio_result = 0
         self.hw_error_on = 0
         self.writes = []
@@ -82,6 +94,11 @@ class LK:
             uc.mem_write(part + 0x20, struct.pack('<QQ', self.first, self.last))
             uc.mem_write(args[1], struct.pack('<Q', part if self.partition_found else 0))
         elif offset == 0x72E70: result = self.bootdev
+        elif offset == 0xAE64: result = self.bootmode
+        elif offset == 0x81DB8:
+            self.lock_reads += 1
+            uc.mem_write(LOCK_STATE, struct.pack('<I', self.real_lock_state))
+            result = self.lock_error
         elif offset == 0x27D14:
             self.protect_calls.append(args[:2])
             self.captured = bytes(uc.mem_read(STATE, 20))
@@ -106,7 +123,7 @@ class LK:
             raise ProtectionError(self.string(args[2]))
         else: return
         uc.reg_write(UC_ARM64_REG_X0, result & ((1 << 64) - 1))
-        # Skip all stock LK calls; only the injected binary is executed.
+        # Mock stock APIs; the injected binary and stock lock-getter tail execute.
         from unicorn.arm64_const import UC_ARM64_REG_PC
         uc.reg_write(UC_ARM64_REG_PC, uc.reg_read(UC_ARM64_REG_LR))
 
@@ -121,7 +138,7 @@ class LK:
         result = self.uc.reg_read(UC_ARM64_REG_X0) & 0xFFFFFFFF
         return result - (1 << 32) if result & 0x80000000 else result
 
-    def activate(self, boot_state=4):
+    def activate(self, boot_state=0):
         assert self.run(ENTRY + 4, 0, boot_state) == 77
         assert struct.unpack_from('<I', self.captured, 16)[0] == 1
         assert struct.unpack('<I', self.uc.mem_read(STATE + 16, 4))[0] == 0
@@ -138,11 +155,67 @@ class LK:
 
 
 class PayloadTests(unittest.TestCase):
+    def test_normal_boot_spoofs_locked_and_green(self):
+        lk = LK()
+        state = BUFFER + 0x600
+        lk.lock_error = -5
+        self.assertEqual(lk.run(BASE + 0x820AC, state), 0)
+        self.assertEqual(struct.unpack('<I', lk.uc.mem_read(state, 4))[0], 4)
+        lk.run(BASE + 0x4F2EC, 3)
+        self.assertEqual(lk.run(BASE + 0x4F2E0), 0)
+        self.assertEqual(struct.unpack('<I', lk.uc.mem_read(BOOT_STATE, 4))[0], 0)
+        self.assertEqual(lk.lock_reads, 0)
+
+    def test_recovery_and_bootloader_report_real_unlocked_and_orange(self):
+        for mode in (2, 99):
+            with self.subTest(mode=mode):
+                lk = LK('once-b'); lk.bootmode = mode
+                state = BUFFER + 0x600
+                self.assertEqual(lk.run(BASE + 0x820AC, state), 0)
+                self.assertEqual(struct.unpack('<I', lk.uc.mem_read(state, 4))[0], 3)
+                for requested in (0, 1, 2, 3):
+                    lk.run(BASE + 0x4F2EC, requested)
+                    self.assertEqual(lk.run(BASE + 0x4F2E0), 2)
+                    self.assertEqual(struct.unpack('<I', lk.uc.mem_read(BOOT_STATE, 4))[0], 2)
+                lk.run(ENTRY + 4, 0, 2)
+                self.assertEqual(lk.flag, 'once-b')
+                self.assertEqual(lk.writes, [])
+                self.assertEqual(struct.unpack_from('<I', lk.captured, 16)[0], 0)
+
+    def test_locked_non_system_boot_preserves_requested_color(self):
+        lk = LK(); lk.bootmode = 2; lk.real_lock_state = 4
+        state = BUFFER + 0x600
+        self.assertEqual(lk.run(BASE + 0x820AC, state), 0)
+        self.assertEqual(struct.unpack('<I', lk.uc.mem_read(state, 4))[0], 4)
+        for requested in (0, 1, 3):
+            lk.run(BASE + 0x4F2EC, requested)
+            self.assertEqual(lk.run(BASE + 0x4F2E0), requested)
+
+    def test_stock_lock_errors_and_null_pointer_are_preserved(self):
+        for mode in (0, 2, 99):
+            lk = LK(); lk.bootmode = mode
+            self.assertEqual(lk.run(BASE + 0x820AC, 0), 0x100006)
+            self.assertEqual(lk.lock_reads, 0)
+        lk = LK(); lk.bootmode = 2; lk.lock_error = -5
+        state = BUFFER + 0x600
+        self.assertEqual(lk.run(BASE + 0x820AC, state), 0x103000)
+        self.assertEqual(struct.unpack('<I', lk.uc.mem_read(state, 4))[0], 1)
+        lk.run(BASE + 0x4F2EC, 0)
+        self.assertEqual(lk.run(BASE + 0x4F2E0), 3)
+
+    def test_mode_change_does_not_retain_green(self):
+        lk = LK()
+        lk.run(BASE + 0x4F2EC, 0)
+        lk.bootmode = 99
+        self.assertEqual(lk.run(BASE + 0x4F2E0), 2)
+        lk.bootmode = 0
+        self.assertEqual(lk.run(BASE + 0x4F2E0), 0)
+
     def test_default_and_invalid_flags_protect(self):
         for flag in (None, 'off', '', 'once', 'once-b-extra', '1'):
             with self.subTest(flag=flag):
                 lk = LK(flag)
-                self.assertEqual(lk.run(ENTRY + 4, 0, 4), 77)
+                self.assertEqual(lk.run(ENTRY + 4, 0, 0), 77)
                 self.assertEqual(struct.unpack_from('<I', lk.captured, 16)[0], 0)
                 self.assertEqual(lk.writes, [])
                 self.assertEqual(lk.ioctl(), 0)
@@ -183,12 +256,12 @@ class PayloadTests(unittest.TestCase):
             self.assertEqual(lk.ioctls, [])
             lk.ioctl()
             self.assertEqual(len(lk.ioctls), 1)
-            lk.run(ENTRY + 4, 0, 4)
+            lk.run(ENTRY + 4, 0, 0)
             self.assertEqual(struct.unpack_from('<I', lk.captured, 16)[0], 0)
 
-    def test_stock_caller_security_states_consume_and_split(self):
-        # Stock LK passes its cached state (1/3), not the spoofed LKS_LOCK (4).
-        for boot_state in (1, 3):
+    def test_stock_caller_boot_colors_consume_and_split(self):
+        # This argument is Verified Boot color, distinct from LKS_LOCK (4).
+        for boot_state in (0, 1, 3):
             with self.subTest(boot_state=boot_state):
                 lk = LK('once-b')
                 # Device GPT and LK log: init_boot_b inside md1img_b -> tee_b.
@@ -222,13 +295,13 @@ class PayloadTests(unittest.TestCase):
             if failure == 'suffix': lk.suffix = '_a'
             elif failure == 'extent': lk.last = lk.first - 1
             else: setattr(lk, failure, False)
-            lk.run(ENTRY + 4, 0, 4)
+            lk.run(ENTRY + 4, 0, 0)
             self.assertEqual(struct.unpack_from('<I', lk.captured, 16)[0], 0)
 
     def test_other_boot_modes_do_not_consume(self):
-        for mode, locked, bootdev in ((1, 4, 2), (4, 4, 2), (0, 2, 2), (0, 4, 1)):
+        for mode, color, bootdev in ((1, 0, 2), (4, 0, 2), (0, 2, 2), (0, 0, 1)):
             lk = LK('once-b'); lk.bootdev = bootdev
-            lk.run(ENTRY + 4, mode, locked)
+            lk.run(ENTRY + 4, mode, color)
             self.assertEqual(lk.flag, 'once-b')
             self.assertEqual(struct.unpack_from('<I', lk.captured, 16)[0], 0)
 
@@ -261,11 +334,13 @@ class InjectorTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): stage.execute(ctx)
         self.assertEqual(lk.data, b'wrong build')
 
-    def test_patch_changes_only_three_calls_and_payload(self):
+    def test_patch_changes_only_calls_state_entries_and_payload(self):
         stage = InitBootWriteStage()
         original = bytearray(0xE2610)
         for call, target, _ in stage.HOOKS:
             original[call:call + 4] = encode_bl(BASE + call, BASE + target)
+        for function, expected, _ in stage.FUNCTION_HOOKS:
+            original[function:function + len(expected)] = expected
         lk = SimpleNamespace(data=bytes(original))
         ctx = SimpleNamespace(base=BASE, lk=lk, payload_dir=ROOT / 'payload/build')
         with patch.object(stage, 'LK_SHA256', hashlib.sha256(original).hexdigest()): stage.execute(ctx)
@@ -274,6 +349,9 @@ class InjectorTests(unittest.TestCase):
         for call, _, entry in stage.HOOKS:
             allowed.update(range(call, call + 4))
             self.assertEqual(lk.data[call:call + 4], encode_bl(BASE + call, ENTRY + entry))
+        for function, _, entry in stage.FUNCTION_HOOKS:
+            allowed.update(range(function, function + 4))
+            self.assertEqual(lk.data[function:function + 4], encode_b(BASE + function, ENTRY + entry))
         changed = {i for i, (a, b) in enumerate(zip(original, lk.data)) if a != b}
         self.assertTrue(changed <= allowed)
         self.assertEqual(len(original), len(lk.data))
@@ -283,6 +361,8 @@ class InjectorTests(unittest.TestCase):
         original = bytearray(0xE2610)
         for call, target, _ in stage.HOOKS:
             original[call:call + 4] = encode_bl(BASE + call, BASE + target)
+        for function, expected, _ in stage.FUNCTION_HOOKS:
+            original[function:function + len(expected)] = expected
         valid = stage.load_payload(ROOT / 'payload/build', 'pacman')
         for invalid in (b'', valid[:-32], valid + b'x' * stage.CAPACITY, b'x' * len(valid)):
             lk = SimpleNamespace(data=bytes(original))
@@ -295,6 +375,21 @@ class InjectorTests(unittest.TestCase):
         with patch.object(stage, 'LK_SHA256', hashlib.sha256(original).hexdigest()):
             with self.assertRaises(ValueError): stage.execute(SimpleNamespace(base=BASE, lk=lk, payload_dir=ROOT / 'payload/build'))
         self.assertEqual(lk.data, original)
+
+    def test_corrupt_state_functions_fail_before_mutation(self):
+        stage = InitBootWriteStage()
+        for corrupt, _, _ in stage.FUNCTION_HOOKS:
+            original = bytearray(0xE2610)
+            for call, target, _ in stage.HOOKS:
+                original[call:call + 4] = encode_bl(BASE + call, BASE + target)
+            for function, expected, _ in stage.FUNCTION_HOOKS:
+                original[function:function + len(expected)] = expected
+            original[corrupt + 4] ^= 1
+            lk = SimpleNamespace(data=bytes(original))
+            ctx = SimpleNamespace(base=BASE, lk=lk, payload_dir=ROOT / 'payload/build')
+            with patch.object(stage, 'LK_SHA256', hashlib.sha256(original).hexdigest()):
+                with self.assertRaises(ValueError): stage.execute(ctx)
+            self.assertEqual(lk.data, original)
 
 
 if __name__ == '__main__':
